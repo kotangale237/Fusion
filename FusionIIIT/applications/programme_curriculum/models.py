@@ -50,7 +50,8 @@ BATCH_NAMES = [
     ('M.Tech Manufacturing and Automation', 'M.Tech Manufacturing and Automation'),
     ('B.Des', 'B.Des'),
     ('M.Des', 'M.Des'),
-    ('Phd', 'Phd')
+    ('PhD (Odd)', 'PhD (Odd)'),
+    ('PhD (Even)', 'PhD (Even)')
 ]
 
 VERSION_BUMP_CHOICES = [
@@ -228,6 +229,50 @@ class Course(models.Model):
         return CourseSlot.objects.filter(courses=self.id)
 
 
+class Thesis(models.Model):
+    """Store thesis details for PhD and M.Tech programmes"""
+    
+    code = models.CharField(max_length=10, null=False, blank=False, unique=True)
+    name = models.CharField(max_length=100, null=False, blank=False)
+    credit = models.PositiveIntegerField(default=0, null=False, blank=False)
+    discipline = models.ForeignKey(Discipline, on_delete=models.CASCADE, null=False)
+    programme_type = models.CharField(
+        max_length=3, 
+        choices=[('PG', 'Postgraduate'), ('PHD', 'Doctor of Philosophy')],
+        null=False, 
+        blank=False
+    )
+    working_thesis = models.BooleanField(default=True)
+    
+    class Meta:
+        unique_together = ('code', 'discipline')
+    
+    def __str__(self):
+        return f"{self.code} - {self.name} ({self.discipline.acronym})"
+
+
+class ProgressSeminar(models.Model):
+    """Store progress seminar details for PhD and M.Tech programmes"""
+    
+    code = models.CharField(max_length=10, null=False, blank=False, unique=True)
+    name = models.CharField(max_length=100, null=False, blank=False)
+    credit = models.PositiveIntegerField(default=0, null=False, blank=False)
+    discipline = models.ForeignKey(Discipline, on_delete=models.CASCADE, null=False)
+    programme_type = models.CharField(
+        max_length=3, 
+        choices=[('PG', 'Postgraduate'), ('PHD', 'Doctor of Philosophy')],
+        null=False, 
+        blank=False
+    )
+    working_progress_seminar = models.BooleanField(default=True)
+    
+    class Meta:
+        unique_together = ('code', 'discipline')
+    
+    def __str__(self):
+        return f"{self.code} - {self.name} ({self.discipline.acronym})"
+
+
 class Batch(models.Model):
     """Store batch details"""
 
@@ -269,6 +314,52 @@ class CourseSlot(models.Model):
 
     class Meta:
         unique_together = ('semester', 'name', 'type')
+
+    @property
+    def for_batches(self):
+        return ((Semester.objects.get(id=self.semester.id)).curriculum).batches
+
+
+class ThesisSlot(models.Model):
+    """Store thesis slot details for a semester"""
+    
+    semester = models.ForeignKey(
+        Semester, null=False, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100, null=False, blank=False)
+    thesis_slot_info = models.TextField(null=True, blank=True)
+    theses = models.ManyToManyField(Thesis, blank=True)
+    duration = models.PositiveIntegerField(default=1)
+    min_registration_limit = models.PositiveIntegerField(default=0)
+    max_registration_limit = models.PositiveIntegerField(default=1000)
+
+    def __str__(self):
+        return str(Semester.__str__(self.semester) + ", " + self.name)
+
+    class Meta:
+        unique_together = ('semester', 'name')
+
+    @property
+    def for_batches(self):
+        return ((Semester.objects.get(id=self.semester.id)).curriculum).batches
+
+
+class ProgressSeminarSlot(models.Model):
+    """Store progress seminar slot details for a semester"""
+    
+    semester = models.ForeignKey(
+        Semester, null=False, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100, null=False, blank=False)
+    progress_seminar_slot_info = models.TextField(null=True, blank=True)
+    progress_seminars = models.ManyToManyField(ProgressSeminar, blank=True)
+    duration = models.PositiveIntegerField(default=1)
+    min_registration_limit = models.PositiveIntegerField(default=0)
+    max_registration_limit = models.PositiveIntegerField(default=1000)
+
+    def __str__(self):
+        return str(Semester.__str__(self.semester) + ", " + self.name)
+
+    class Meta:
+        unique_together = ('semester', 'name')
 
     @property
     def for_batches(self):
