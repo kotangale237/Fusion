@@ -1314,7 +1314,8 @@ class GenerateResultAPI(APIView):
 
             # Define a fill style for header cells: light grey background.
             header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
-            low_spi_fill = PatternFill(start_color="B30016", end_color="B30016", fill_type="solid")
+            zero_spi_fill = PatternFill(start_color="B30016", end_color="B30016", fill_type="solid")
+            low_spi_fill = PatternFill(start_color="F8F40F", end_color="F8F40F", fill_type="solid")
             thin_border = Border(
                 left=Side(style="thin"), right=Side(style="thin"),
                 top=Side(style="thin"), bottom=Side(style="thin")
@@ -1422,14 +1423,12 @@ class GenerateResultAPI(APIView):
             cell.font = Font(bold=True)
             cell.fill = header_fill
 
-            # Ensure full header rows (1 to 4) are highlighted.
             max_col = ws.max_column
             for row in range(1, 5):
                 for col in range(1, max_col + 1):
                     cell = ws.cell(row=row, column=col)
                     cell.fill = header_fill
                     cell.border = thin_border
-
             total_columns = ws.max_column
 
             # Fill in student rows, starting from row 5.
@@ -1514,13 +1513,17 @@ class GenerateResultAPI(APIView):
                 for c in [col_ptr, col_ptr+1, col_ptr+2, col_ptr+3, col_ptr+4, col_ptr+5, col_ptr+6]:
                     ws.cell(row=row_idx, column=c).alignment = Alignment(horizontal="center", vertical="center")
 
-                # Highlight students with low SPI across the complete row.
+                # Highlight rows based on SPI and write warning in dedicated warning column.
                 try:
                     spi_numeric = float(spi_val)
                 except (TypeError, ValueError):
                     spi_numeric = None
 
-                if spi_numeric is not None and spi_numeric < 5:
+                if spi_numeric is not None and spi_numeric == 0:
+                    for c in range(1, total_columns + 1):
+                        ws.cell(row=row_idx, column=c).fill = zero_spi_fill
+                    ws.cell(row=row_idx, column=col_ptr+6).value = ""
+                elif spi_numeric is not None and spi_numeric < 5:
                     for c in range(1, total_columns + 1):
                         ws.cell(row=row_idx, column=c).fill = low_spi_fill
                     ws.cell(row=row_idx, column=col_ptr+6).value = "WARNING"
