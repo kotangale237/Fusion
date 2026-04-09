@@ -4120,3 +4120,221 @@ class GradeSummaryAPI(APIView):
                 {"error": f"An error occurred: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class GradeValidationView(APIView):
+    """
+    API for Grade Validation: fetch batch years/branches, list students,
+    and return all-semester grades for a student.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Return batch list for the dropdown (same format as GenerateGradeSheetForm)."""
+        role = request.GET.get("role")
+        if role != "acadadmin":
+            return Response({"error": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+
+        batches_qs = Batch.objects.select_related("discipline").order_by("-year", "name")
+        batch_list = [
+            {"id": b.id, "label": f"{b.name} - {b.discipline} {b.year}"}
+            for b in batches_qs
+        ]
+        return Response({"batches": batch_list}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        role = request.data.get("Role")
+        if role != "acadadmin":
+            return Response({"error": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+
+        action = request.data.get("action")
+
+        # ── Action 1: return student list for a batch_id ────────────────────
+        if action == "get_students":
+            batch_id = request.data.get("batch_id")
+            if not batch_id:
+                return Response(
+                    {"error": "batch_id is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            try:
+                batch_id = int(batch_id)
+            except (TypeError, ValueError):
+                return Response({"error": "Invalid batch_id."}, status=status.HTTP_400_BAD_REQUEST)
+
+            students = (
+                Student.objects.filter(batch_id=batch_id)
+                .select_related("id__user", "batch_id__discipline")
+                .order_by("id__user__username")
+            )
+
+            PROGRAMME_MAP = {
+                "B.Tech": "Bachelor of Technology",
+                "B.Des": "Bachelor of Design",
+                "M.Tech": "Master of Technology",
+                "M.Des": "Master of Design",
+                "PhD": "Doctor of Philosophy",
+            }
+
+            student_list = []
+            for s in students:
+                discipline = ""
+                try:
+                    if s.batch_id and s.batch_id.discipline:
+                        discipline = s.batch_id.discipline.name
+                except Exception:
+                    pass
+
+                student_list.append({
+                    "roll_no": s.id.user.username,
+                    "name": f"{s.id.user.first_name} {s.id.user.last_name}".strip(),
+                    "programme": PROGRAMME_MAP.get(s.programme, s.programme or ""),
+                    "discipline": discipline,
+                })
+
+            return Response({"students": student_list}, status=status.HTTP_200_OK)
+
+        # ── Action 2: all-semester grades for one student ────────────────────
+        elif action == "get_all_grades":
+            roll_no = request.data.get("roll_no")
+            if not roll_no:
+                return Response({"error": "roll_no is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Validate input: only alphanumeric + common roll-no chars
+            import re as _re
+            if not _re.match(r'^[A-Za-z0-9_/-]{1,20}$', str(roll_no)):
+                return Response({"error": "Invalid roll number format."}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                student = Student.objects.select_related(
+                    "id__user", "id__department", "batch_id__discipline"
+                ).get(id__user__username=roll_no)
+            except Student.DoesNotExist:
+                return Response({"error": "Student not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            student_id = student.id_id
+
+            # All grades across every semester, ordered chronologically
+            all_grades = (
+                Student_grades.objects.filter(roll_no=student_id)
+                .select_related("course_id")
+                .order_by("semester", "semester_type", "course_id__code")
+            )
+
+            # Group by (semester_no, semester_type)
+            semesters_map = defaultdict(list)
+            for g in all_grades:
+                semesters_map[(g.semester, g.semester_type)].append(g)
+
+            # Sort keys: summer comes AFTER the matching regular semester
+            def _sem_sort_key(key):
+                s_no, s_type = key
+                is_summer = bool(s_type and "summer" in str(s_type).lower())
+                # (semester_no, 1 if summer else 0) keeps summers right after their regular sem
+                return (s_no if s_no is not None else 0, 1 if is_summer else 0)
+
+            sorted_keys = sorted(semesters_map.keys(), key=_sem_sort_key)
+
+            # Track first appearance of each course to classify remark
+            FAILING_GRADES = {"F", "I", "X", "AU", "CD"}
+            NON_CREDIT_GRADES = {"F", "I", "X", "AU", "CD", "S"}
+            course_first_grade: dict = {}   # course_id -> first grade string
+
+            semesters_data = []
+            summer_counter = 0  # increment each time we encounter a summer semester
+            running_total_credits = Decimal('0')
+
+            for key in sorted_keys:
+                s_no, s_type = key
+                is_summer = bool(s_type and "summer" in str(s_type).lower())
+
+                if is_summer:
+                    summer_counter += 1
+                    label = f"Summer Semester {summer_counter}"
+                else:
+                    label = f"Semester {s_no}"
+
+                courses = []
+                sem_credits_earned = Decimal('0')
+                for g in semesters_map[key]:
+                    course = g.course_id
+                    cid = course.id
+                    grade = g.grade or ""
+
+                    if cid in course_first_grade:
+                        prev = course_first_grade[cid]
+                        remark = "Backlog" if prev in FAILING_GRADES else "Improvement"
+                    else:
+                        remark = "Regular"
+                        course_first_grade[cid] = grade  # record only first appearance
+
+                    # Count credits only for non-failing grades
+                    credit = Decimal(str(course.credit)) if course.credit is not None else Decimal('0')
+                    if grade and grade.strip() not in NON_CREDIT_GRADES:
+                        sem_credits_earned += credit
+
+                    courses.append({
+                        "code": course.code or "",
+                        "name": course.name or "",
+                        "credits": float(credit),
+                        "grade": grade,
+                        "remark": remark,
+                    })
+
+                if courses:  # skip empty semesters (no graded courses)
+                    running_total_credits += sem_credits_earned
+
+                    # Compute SPI / CPI via existing helpers
+                    try:
+                        s_spi, _, _ = calculate_spi_for_student(student, s_no, s_type)
+                        s_cpi, _, _ = calculate_cpi_for_student(student, s_no, s_type)
+                    except Exception:
+                        s_spi, s_cpi = 0, 0
+
+                    semesters_data.append({
+                        "semester_no": s_no,
+                        "semester_type": s_type,
+                        "is_summer": is_summer,
+                        "label": label,
+                        "courses": courses,
+                        "semester_credits": float(sem_credits_earned),
+                        "total_credits": float(running_total_credits),
+                        "spi": float(s_spi) if s_spi else 0.0,
+                        "cpi": float(s_cpi) if s_cpi else 0.0,
+                    })
+
+            # Build student info
+            programme_full = {
+                "B.Tech": "Bachelor of Technology",
+                "B.Des": "Bachelor of Design",
+                "M.Tech": "Master of Technology",
+                "M.Des": "Master of Design",
+                "PhD": "Doctor of Philosophy",
+            }.get(student.programme, student.programme or "")
+
+            discipline_full = ""
+            try:
+                if student.batch_id and student.batch_id.discipline:
+                    discipline_full = student.batch_id.discipline.name
+            except Exception:
+                pass
+            if not discipline_full:
+                try:
+                    discipline_full = student.id.department.name if student.id.department else ""
+                except Exception:
+                    pass
+
+            student_info = {
+                "roll_no": roll_no,
+                "name": f"{student.id.user.first_name} {student.id.user.last_name}".strip(),
+                "programme": programme_full,
+                "discipline": discipline_full,
+            }
+
+            return Response(
+                {"student_info": student_info, "semesters": semesters_data},
+                status=status.HTTP_200_OK,
+            )
+
+        return Response({"error": "Invalid action."}, status=status.HTTP_400_BAD_REQUEST)
