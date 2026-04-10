@@ -4705,6 +4705,98 @@ class GradeValidationView(APIView):
                     ]))
                     story.append(st2)
 
+                # ── Credits Details table ────────────────────────────────
+                NON_EARN = {"F", "I", "X", "AU", "CD", "S", "—", ""}
+                graded_sems = [s for s in semesters if not s.get("is_registered_only")]
+
+                cd_rows = []
+                tot_earned = tot_regular = tot_backlog_imp = tot_swayam = 0.0
+
+                for gs in graded_sems:
+                    earned = regular = backlog_imp = swayam = 0.0
+                    for c in gs.get("courses", []):
+                        cr  = float(c.get("credits") or 0)
+                        rem = c.get("remark", "Regular")
+                        g   = (c.get("grade") or "").strip()
+                        is_sw = str(c.get("code", "")).upper().startswith("SW")
+                        if g in NON_EARN:
+                            continue
+                        earned += cr
+                        if is_sw:
+                            swayam += cr
+                        elif rem in ("Backlog", "Improvement"):
+                            backlog_imp += cr
+                        else:
+                            regular += cr
+
+                    tot_earned      += earned
+                    tot_regular     += regular
+                    tot_backlog_imp += backlog_imp
+                    tot_swayam      += swayam
+
+                    def _fmt(v): return str(int(v)) if v == int(v) else f"{v:.1f}"
+                    cd_rows.append([
+                        Paragraph(gs["label"], small),
+                        Paragraph(_fmt(earned),      small),
+                        Paragraph(_fmt(regular),     small),
+                        Paragraph(_fmt(backlog_imp), small),
+                        Paragraph(_fmt(swayam),      small),
+                    ])
+
+                def _fmt(v): return str(int(v)) if v == int(v) else f"{v:.1f}"
+
+                if cd_rows:
+                    story.append(Spacer(1, 10))
+
+                    # Heading banner
+                    cd_heading = RLTable(
+                        [[Paragraph("<b>Credits Details</b>", heading_style)]],
+                        colWidths=[W],
+                    )
+                    cd_heading.setStyle(RLTableStyle([
+                        ("BOX",        (0, 0), (-1, -1), 0.5, RL_COLORS.black),
+                        ("BACKGROUND", (0, 0), (-1, -1), RL_COLORS.HexColor("#d3f9d8")),
+                        ("PADDING",    (0, 0), (-1, -1), 4),
+                    ]))
+                    story.append(cd_heading)
+
+                    # Header row + data rows + total row
+                    cd_col_w = [W * 0.28, W * 0.18, W * 0.18, W * 0.18, W * 0.18]
+                    cd_header = [
+                        Paragraph("<b>Semester</b>",                       small),
+                        Paragraph("<b>Credits Earned</b>",                 small),
+                        Paragraph("<b>Regular Credits</b>",                small),
+                        Paragraph("<b>Backlog / Improvement Credits</b>",  small),
+                        Paragraph("<b>Swayam Credits</b>",                 small),
+                    ]
+                    cd_total_row = [
+                        Paragraph("<b>Total</b>",                   small),
+                        Paragraph(f"<b>{_fmt(tot_earned)}</b>",     small),
+                        Paragraph(f"<b>{_fmt(tot_regular)}</b>",    small),
+                        Paragraph(f"<b>{_fmt(tot_backlog_imp)}</b>",small),
+                        Paragraph(f"<b>{_fmt(tot_swayam)}</b>",     small),
+                    ]
+
+                    cd_tbl = RLTable(
+                        [cd_header] + cd_rows + [cd_total_row],
+                        colWidths=cd_col_w,
+                        repeatRows=1,
+                    )
+                    n_data = len(cd_rows)
+                    cd_tbl.setStyle(RLTableStyle([
+                        ("BOX",         (0, 0),  (-1, -1), 0.5, RL_COLORS.black),
+                        ("LINEBELOW",   (0, 0),  (-1, 0),  0.5, RL_COLORS.black),
+                        ("LINEABOVE",   (0, -1), (-1, -1), 0.5, RL_COLORS.black),
+                        ("INNERGRID",   (0, 1),  (-1, -2), 0.3, RL_COLORS.HexColor("#cccccc")),
+                        ("BACKGROUND",  (0, 0),  (-1, 0),  RL_COLORS.HexColor("#ebfbee")),
+                        ("BACKGROUND",  (0, -1), (-1, -1), RL_COLORS.HexColor("#ebfbee")),
+                        ("FONTSIZE",    (0, 0),  (-1, -1), 8),
+                        ("PADDING",     (0, 0),  (-1, -1), 4),
+                        ("ALIGN",       (1, 0),  (-1, -1), "CENTER"),
+                        ("VALIGN",      (0, 0),  (-1, -1), "MIDDLE"),
+                    ]))
+                    story.append(cd_tbl)
+
                 doc.build(story)
                 return buf.getvalue()
 
