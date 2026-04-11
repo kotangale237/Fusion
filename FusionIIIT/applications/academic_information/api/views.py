@@ -509,7 +509,7 @@ def generate_xlsheet_api(request):
         
         # OPTIMIZATION 7: Fast Excel generation with minimal formatting
         from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
         
         wb = Workbook()
         ws = wb.active
@@ -522,6 +522,12 @@ def generate_xlsheet_api(request):
         # Minimal header formatting (single operation)
         header_font = Font(bold=True, color="FFFFFF")
         header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        thin_border = Border(
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="thin"),
+            bottom=Side(style="thin"),
+        )
         
         # Add title rows efficiently
         ws.merge_cells('A1:G1')
@@ -546,18 +552,18 @@ def generate_xlsheet_api(request):
         if course_instructor:
             instructor_name = f"{course_instructor.instructor_id.id.user.first_name} {course_instructor.instructor_id.id.user.last_name}".strip()
         
-        # Course details
-        ws['A3'] = "Course No:"
-        ws['B3'] = course_info['code']
-        ws['A4'] = "Course Title:"
-        ws.merge_cells('B4:G4')
-        ws['B4'] = course_info['name']
-        ws['A5'] = "Instructor:"
-        ws.merge_cells('B5:G5')
-        ws['B5'] = instructor_name
-        ws['A6'] = "List Type:"
-        ws.merge_cells('B6:G6')
-        ws['B6'] = list_type_display
+        # Course details merged into single full-width cells (no borders on metadata rows).
+        ws.merge_cells('A3:G3')
+        ws['A3'] = f"Course No: {course_info['code']}"
+        ws.merge_cells('A4:G4')
+        ws['A4'] = f"Course Title: {course_info['name']}"
+        ws.merge_cells('A5:G5')
+        ws['A5'] = f"Instructor: {instructor_name}"
+        ws.merge_cells('A6:G6')
+        ws['A6'] = f"List Type: {list_type_display}"
+
+        for row in range(3, 7):
+            ws[f'A{row}'].alignment = Alignment(horizontal="left", vertical="center")
 
         headers = ['Sl. No', 'Roll No', 'Name', 'Discipline', 'Email', 'Reg. Type', 'Signature']
         for col, header in enumerate(headers, 1):
@@ -577,6 +583,12 @@ def generate_xlsheet_api(request):
                 ''  # Signature
             ]
             ws.append(row_data)
+
+        # Add borders only to the student list table section (header + data rows).
+        last_table_row = ws.max_row
+        for row in range(8, last_table_row + 1):
+            for col in range(1, 8):
+                ws.cell(row=row, column=col).border = thin_border
 
         from io import BytesIO
         output = BytesIO()
@@ -666,8 +678,17 @@ def generate_preregistration_report(request):
         
     if request.method == "POST":
         sem = request.data.get('semester_no')
-        batch_id=request.data.get('batch_branch')
-        batch = Batch.objects.filter(id = batch_id).first()
+        batch_id = request.data.get('batch_branch')
+        preview_only = request.data.get('preview_only', False)
+        status_filter = request.data.get('status_filter', None)  # "Registered" | "Not Registered" | None
+
+        if not sem or not batch_id:
+            return Response({'detail': 'semester_no and batch_branch are required.'}, status=400)
+
+        batch = Batch.objects.filter(id=batch_id).first()
+        if not batch:
+            return Response({'detail': 'Batch not found.'}, status=404)
+
         obj = InitialRegistration.objects.filter(student_id__batch_id=batch_id, semester_id__semester_no=sem)
 
 
@@ -750,6 +771,40 @@ def generate_preregistration_report(request):
                 
                 data.append(z)
                 m+=1
+
+        # Sort all rows by roll_no (index 1) ascending
+        data.sort(key=lambda r: r[1] if len(r) > 1 else '')
+
+        # Apply status filter for export (index 4 holds status string)
+        VALID_FILTERS = {"Registered", "Not Registered"}
+        if status_filter in VALID_FILTERS:
+            data = [r for r in data if (r[4] if len(r) > 4 else '') == status_filter]
+
+        # --- JSON preview mode ---
+        if preview_only:
+            preview_rows = []
+            for row in data:
+                entry = {
+                    'roll_no': row[1] if len(row) > 1 else '',
+                    'name': row[2] if len(row) > 2 else '',
+                    'department': row[3] if len(row) > 3 else '',
+                    'status': row[4] if len(row) > 4 else '',
+                    'timestamp': row[5] if len(row) > 5 else '',
+                    'course_slot': row[6] if len(row) > 6 else '',
+                    'choices': row[7:] if len(row) > 7 else [],
+                }
+                preview_rows.append(entry)
+            return Response({
+                'title': "Pre-registration: {} {} {} Semester: {}".format(
+                    batch.name, batch.discipline.acronym, batch.year, sem
+                ),
+                'batch_name': "{} {} {}".format(batch.name, batch.discipline.acronym, batch.year),
+                'semester': sem,
+                'max_choices': max_width,
+                'students': preview_rows,
+            })
+
+        # --- XLSX export mode ---
         output = BytesIO()
 
         book = xlsxwriter.Workbook(output,{'in_memory':True})
